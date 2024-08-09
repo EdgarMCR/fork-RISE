@@ -50,15 +50,40 @@ class RISE(nn.Module):
         p = []
         for i in range(0, N, self.gpu_batch):
             p.append(self.model(stack[i:min(i + self.gpu_batch, N)]))
-        p = torch.cat(p)
+
+        if torch.is_tensor(p[0]):
+            p = torch.cat(p)
+        else:
+            p = get_confidence_vector_from_ultralytics_result_objects(p)
+
         # Number of classes
         CL = p.size(1)
         sal = torch.matmul(p.data.transpose(0, 1), self.masks.view(N, H * W))
         sal = sal.view((CL, H, W))
         sal = sal / N / self.p1
         return sal
-    
-    
+
+
+def get_confidence_vector_from_ultralytics_result_objects(results_list: list[list]) -> torch.Tensor:
+    """ Need to convert ultralitics results into a tensor with probabilities for each class:
+    Num images x probabilities. In the results object, the boxes object has a `cls` attribute and a `conf`
+    attribute and the mapping is {0: 'gsm', 1: 'lte', 2: 'umts'}. For each class, find max confidence
+    """
+    cleaned = []
+    for results in results_list:
+        for result in results:
+            confs = {0: 0, 1: 0, 2: 0}
+            for box in result.boxes:
+                cls = int(box.cls)
+                max_val = confs[cls]
+                if max_val < float(box.conf):
+                    confs[cls] = float(box.conf)
+
+            confidences = torch.Tensor(list(confs.values())).cuda()
+            cleaned.append(confidences)
+    return torch.stack(cleaned)
+
+
 class RISEBatch(RISE):
     def forward(self, x):
         # Apply array of filters to the image
@@ -68,10 +93,10 @@ class RISEBatch(RISE):
         stack = stack.view(B * N, C, H, W)
         stack = stack
 
-        #p = nn.Softmax(dim=1)(model(stack)) in batches
+        # p = nn.Softmax(dim=1)(model(stack)) in batches
         p = []
-        for i in range(0, N*B, self.gpu_batch):
-            p.append(self.model(stack[i:min(i + self.gpu_batch, N*B)]))
+        for i in range(0, N * B, self.gpu_batch):
+            p.append(self.model(stack[i:min(i + self.gpu_batch, N * B)]))
         p = torch.cat(p)
         CL = p.size(1)
         p = p.view(N, B, CL)
